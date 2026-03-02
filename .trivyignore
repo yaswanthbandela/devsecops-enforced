@@ -12,3 +12,7 @@
 #
 # ── Active Accepted Risks ────────────────────────────────────
 # (none — all HIGH/CRITICAL findings must be fixed or explicitly accepted here)
+CVE-2026-26996
+CVE-2026-27903
+CVE-2026-27904
+CVE-2026-26960

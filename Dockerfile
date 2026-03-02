@@ -1,5 +1,5 @@
 # ── Stage 1: Dependencies ────────────────────────────────────
-FROM node:20-alpine AS deps
+FROM node:lts-alpine AS deps
 
 # Install pnpm
 RUN npm install -g pnpm@9
@@ -10,7 +10,7 @@ COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Stage 2: Runtime ─────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:lts-alpine AS runner
 
 # Add non-root user for security
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
