@@ -146,6 +146,7 @@ jobs:
           output: 'trivy-fs-results.sarif'
           severity: 'HIGH,CRITICAL'
           exit-code: '0'
+          skip-dirs: 'node_modules'
 
       - name: Run Trivy — image scan (ENFORCED)
         uses: aquasecurity/trivy-action@master
