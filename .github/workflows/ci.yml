@@ -161,13 +161,15 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           trivyignores: '.trivyignore'
+          output: 'trivy-image-results.txt'
         # exit-code: 1 → Pipeline BLOCKED on HIGH/CRITICAL findings
 
-      - name: Upload Trivy SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy Image Report
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          sarif_file: 'trivy-fs-results.sarif'
+          name: trivy-image-report
+          path: trivy-image-results.txt
 
   # ─────────────────────────────────────────
   # STAGE 5: DAST — OWASP ZAP
@@ -208,12 +210,14 @@ jobs:
         with:
           target: 'http://localhost:${{ env.APP_PORT }}'
           cmd_options: '-a -m 1'
+          report_html: 'zap-report.html'
+
       - name: Upload ZAP Report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: zap-scan-report
-          path: report_html.html
+          path: zap-report.html
 
   # ─────────────────────────────────────────
   # STAGE 6: Security Gate — All checks passed
