@@ -1,0 +1,233 @@
+name: CI Security Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+  APP_PORT: 3000
+
+jobs:
+  # ─────────────────────────────────────────
+  # STAGE 1: Install & Test
+  # ─────────────────────────────────────────
+  build-and-test:
+    name: Build & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests with coverage
+        run: pnpm test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  # ─────────────────────────────────────────
+  # STAGE 2: Supply Chain — pnpm audit
+  # Risk model: Block HIGH severity; warn on MODERATE
+  # ─────────────────────────────────────────
+  supply-chain-audit:
+    name: Supply Chain Audit (pnpm)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run pnpm audit (fail on HIGH+)
+        run: |
+          pnpm audit --audit-level=high --json > audit-report.json || true
+          
+          HIGH=$(cat audit-report.json | jq '.metadata.vulnerabilities.high // 0')
+          CRITICAL=$(cat audit-report.json | jq '.metadata.vulnerabilities.critical // 0')
+          
+          echo "🔍 Audit Results:"
+          echo "  HIGH: $HIGH"
+          echo "  CRITICAL: $CRITICAL"
+          
+          if [ "$HIGH" -gt 0 ] || [ "$CRITICAL" -gt 0 ]; then
+            echo "❌ Pipeline blocked: HIGH or CRITICAL vulnerabilities found in dependencies."
+            cat audit-report.json | jq '.advisories'
+            exit 1
+          fi
+          
+          echo "✅ Supply chain check passed."
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pnpm-audit-report
+          path: audit-report.json
+
+  # ─────────────────────────────────────────
+  # STAGE 3: SAST — SonarQube Quality Gate
+  # Risk model: Block if Quality Gate FAILS
+  # ─────────────────────────────────────────
+  sast-sonarqube:
+    name: SAST — SonarQube
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+      - name: Run SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Check SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        # Fails the pipeline if Quality Gate is not PASSED
+
+  # ─────────────────────────────────────────
+  # STAGE 4: Container Scan — Trivy
+  # Risk model: Block on HIGH/CRITICAL in image
+  # ─────────────────────────────────────────
+  container-scan-trivy:
+    name: Container Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t app:${{ github.sha }} .
+
+      - name: Run Trivy — filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+
+      - name: Run Trivy — image scan (ENFORCED)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'app:${{ github.sha }}'
+          format: 'table'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+          ignore-unfixed: true
+          trivyignores: '.trivyignore'
+        # exit-code: 1 → Pipeline BLOCKED on HIGH/CRITICAL findings
+
+      - name: Upload Trivy SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+
+  # ─────────────────────────────────────────
+  # STAGE 5: DAST — OWASP ZAP
+  # Risk model: Fail on HIGH alerts; warn on MEDIUM
+  # ─────────────────────────────────────────
+  dast-owasp-zap:
+    name: DAST — OWASP ZAP
+    runs-on: ubuntu-latest
+    needs: [supply-chain-audit, sast-sonarqube, container-scan-trivy]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start application
+        run: |
+          pnpm start &
+          echo "Waiting for app to be ready..."
+          for i in {1..15}; do
+            curl -s http://localhost:${{ env.APP_PORT }}/health && break
+            sleep 2
+          done
+
+      - name: Run OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:${{ env.APP_PORT }}'
+          rules_file_name: 'zap/zap-rules.conf'
+          cmd_options: '-a'
+          fail_action: true
+          allow_issue_writing: false
+
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-scan-report
+          path: report_html.html
+
+  # ─────────────────────────────────────────
+  # STAGE 6: Security Gate — All checks passed
+  # ─────────────────────────────────────────
+  security-gate:
+    name: ✅ Security Gate
+    runs-on: ubuntu-latest
+    needs: [supply-chain-audit, sast-sonarqube, container-scan-trivy, dast-owasp-zap]
+    steps:
+      - name: All security stages passed
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  ✅ Supply Chain:   PASSED (pnpm audit)"
+          echo "  ✅ SAST:           PASSED (SonarQube)"
+          echo "  ✅ Container:      PASSED (Trivy)"
+          echo "  ✅ DAST:           PASSED (OWASP ZAP)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Pipeline cleared. Safe to deploy."
