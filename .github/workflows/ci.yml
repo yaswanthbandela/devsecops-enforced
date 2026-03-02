@@ -207,7 +207,6 @@ jobs:
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: 'http://localhost:${{ env.APP_PORT }}'
-          rules_file_name: 'zap/zap-rules.conf'
           cmd_options: '-a'
           fail_action: true
           allow_issue_writing: false
