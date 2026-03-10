@@ -175,7 +175,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           exit-code: '1'
           ignore-unfixed: true
-          trivyignores: '.trivyignore'
+      #    trivyignores: '.trivyignore'
           output: 'trivy-image.json'
         # exit-code: 1 → Pipeline BLOCKED on HIGH/CRITICAL findings
 
